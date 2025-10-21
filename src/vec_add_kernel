@@ -1,0 +1,39 @@
+import triton
+import triton.language as tl
+import torch 
+
+@triton.jit
+def vec_add_kernel(x_ptr, y_ptr, out_ptr, num_elements: tl.constexpr, block_size: tl.constexpr):
+    pid = tl.program_id() #this tells us what block we are at. Grabs the id of a block 
+    block_start = pid * block_size # this gives us the offset of where each block starts loading data from. so if bs =2 blck_1 start = 0 * 2 = 0 =, blck_1 = 1 * 2 = 2, etc...
+    thread_offsets = block_start + tl.arange(0, block_size) #list of elements to load in each bloack starting from blck start 
+    #thread offset points to the memory location where the value of a tensor is stored. 
+    mask = thread_offsets < num_elements
+    x_pointers = tl.load(x_ptr + thread_offsets, mask) #x_ptr (first element memory address )
+    y_pointers = tl.load(y_ptr + thread_offsets, mask)
+    result = x_pointers + y_pointers
+    tl.store(out_ptr+thread_offsets, result, mask=mask)
+
+
+def ceil_division(a, b):
+    return ((a+b-1) // b)
+
+def vector_addition(x, y):
+    output_buffer = torch.empty_like(x)
+    assert x.is_cuda() and y.is_cuda()
+    num_elems = x.numel()
+    assert num_elems == y.numel()
+
+    block_size = 128 # 128 threads pxer block each threads works on each elements of the input vector. A block work on BLOCK_SIZE elements per instances
+    
+    grid_size = ceil_division(num_elems, block_size) #number of block instances to launch 
+
+    grid = (grid_size,)
+
+    k2 = vec_add_kernel[grid](x, y, output_buffer,
+                              num_elems, 
+                              block_size)
+    return output_buffer
+
+
+

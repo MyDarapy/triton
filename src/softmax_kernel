@@ -1,0 +1,72 @@
+import triton 
+import triton.language as tl 
+import torch
+from torch.nn import functional as F 
+
+
+def naive_softmax(x):
+    "eager mode softmax - no optimization"
+    x_max = x.max(dim=1)[0]
+    safe_x = x - x_max[:, None]
+    numerator = torch.exp(safe_x)
+    denominator = torch.sum(numerator, dim =1)
+    softmax_out = numerator / denominator[:, None]
+    return softmax_out
+
+
+@triton.jit
+def _softmax_kernel(out_ptr, stride_output_row, input_ptr, stride_input_row, num_cols, block_size: tl.constexpr):
+    row_index = tl.program_id(0)
+
+    row_start_ptr = input_ptr + (row_index * stride_input_row) #gives us where each program (row based) would start loading data from. The starting base address of each row in our 2D array 
+    cols_offset = tl.arange(0, block_size) # gives indicies (index)
+    input_pointers = row_start_ptr + cols_offset # pointers to the memory address (memory address itself for instance to load data from per row). A list of memory addresses 
+    mask = cols_offset < num_cols
+
+    #now move data from the HBM to SRAM 
+    row = tl.load(input_pointers, mask=mask, other=float("-inf"))
+
+    #do softmax
+    stabilized_row = row - tl.max(row, axis=0) #subtract the maximum in each row to prevent numerical overflow
+    numerator = tl.exp(stabilized_row)
+    denominator = tl.sum(numerator, axis=0)
+    softmax = numerator / denominator
+
+    #write output back to the DRAM
+    output_row_start_ptr = out_ptr + row_index * stride_output_row
+    output_pointers = output_row_start_ptr + cols_offset
+    tl.store(output_pointers, softmax, mask=mask)
+
+
+
+def softmax(x): 
+    rows, cols = x.shape
+    assert rows.dim() == 2
+    block_size = triton.next_power_of_2(cols)
+    num_warps = 4
+    if block_size > 2047:
+        num_warps = 8
+    if block_size > 4095:
+        num_warps = 16
+
+    output_buffer = torch.empty_like(x)
+    grid = (rows,) # parallelize along the given rows
+
+    _softmax_kernel[grid](output_buffer, output_buffer.stride(0), x, x.stride(0), cols, block_size=block_size, num_warps=num_warps)
+    return output_buffer
+
+torch.manual_seed(2020)
+
+sample = torch.randint(0, 10, size= (2, 5), dtype= torch.float32, device="cuda")
+
+#pytorch softmax
+ref_out = F.softmax(sample, dim=1)
+print(f"ref_out (pytorch optimized softmax): {ref_out}")
+
+#naive eager softmax
+naive_out = naive_softmax(sample)
+print(f"naive softmax: {naive_out}")
+
+#trition
+softmax_out = softmax(sample)
+print(f"Trition fused softmax kernel: {softmax_out}")

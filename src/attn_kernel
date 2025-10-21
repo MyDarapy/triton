@@ -1,0 +1,17 @@
+import triton
+import torch.language as tl
+import torch 
+from pytorch_impl import attn
+
+def eager_attention():
+    pass
+
+def _triton_attention_kernel():
+    pass
+
+def self_attention(x):
+    
+
+
+
+    
