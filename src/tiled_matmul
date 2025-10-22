@@ -1,4 +1,76 @@
 import torch 
 
 M = 27 
-N = 
+N = 24
+K = 12
+
+A = torch.rand((M. K))
+B = torch.rand((K, N))
+
+def matmul():
+    #calculate tile size
+    blockm = M // 3 # 9
+    blockn = N // 3 # 8 
+    blockk = K // 3 # 4
+    
+    #create dummy output buffer to write results to 
+    output = torch.zeros((M,N))
+
+    # tile shapes needs to match the shape of the matrix else masking needs to be done to prevent loading out of bounds values
+
+    total_load = 0
+    total_writes = 0
+
+    for indexM in range(0, M, blockm):
+        startM = indexM
+        endM = startM + blockm
+
+        for indexN in range(0, N, blockn):
+            startN = indexN
+            endN = startN + blockn
+            accumulator = torch.zeros((blockm, blockn))
+
+            for indexK in range(0, k, blockk):
+                startK = indexK
+                endK = startK + blockk
+
+                tileA = A[startM:endM, startK:endK]
+                total_load += tileA.numel()
+                tileB = B[startK:endK, startN:endN]
+                total_load += tileB.numel()
+                accumulator += tileA @ tileB
+            output[startM:endM, startN:endN] = accumulator
+            total_writes += accumulator.numel()
+    assert torch.allclose(output, A@B)
+
+    print("total load from global slow HBM memory: ", total_load)
+    print("total writes to global slow HBM memory: ", total_writes)
+
+
+def naive_mat_mul():
+    output = torch.zeros((M, N))
+
+    total_load = 0
+    total_writes = 0
+
+    for i in range(M):
+        for j in range(N):
+            acc = 0.0
+            for k in range(K):
+                a = A[i, k].item()
+                total_load += 1
+                b = B[k, j].item # three nested for loops. ridicoulsy slow and multiple global memory acceses. No data reuse 
+                total_writes += 1
+            acc += a * b
+            
+            total_writes += acc.numel()
+
+        output[i][j] = acc
+    return output
+
+
+def pytorch_matmul():
+    output = torch.matmul(A, B)
+
+matmul()
+
